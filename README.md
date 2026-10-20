@@ -5,7 +5,7 @@ Proiect la disciplina Sisteme Distribuite: sistem de stocare distribuită de fi�
 ## Echipa
 
 - Student: `[Popenciuc Andrei]`
-- Grupa: `[Grupa]`
+
 
 ## Cerințe preliminare
 
