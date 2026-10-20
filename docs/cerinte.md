@@ -117,3 +117,47 @@ Catalogul de metadate ținut de coordonator poate fi reconstruit integral din ra
 - Sistemul rulează într-o rețea locală (LAN sau pe aceeași mașină în procese separate), cu latență mică și lărgime de bandă suficientă pentru transferul fișierelor.
 - La un moment dat poate cădea cel mult un nod înainte ca sistemul să detecteze defectul și să refacă numărul de copii sau să aleagă un nou coordonator.
 - Defectele nodurilor sunt de tip crash (procesul se oprește brusc sau nu mai răspunde la rețea), nu defecte bizantine (nodurile nu trimit mesaje falsificate intenționat și nu alterează protocolul).
+
+## 6. Scenariul demonstrației
+
+Tabelul de mai jos descrie cei 7 pași folosiți pentru verificarea cap-coadă a sistemului la prezentarea finală.
+
+| Pas | Acțiune | Comanda exactă | Ce trebuie să se vadă |
+| :--- | :--- | :--- | :--- |
+| 1 | Pornirea clusterului inițial (`n1` coordonator, `n2` și `n3` noduri de stocare) | `java -cp target/classes dfs.StorageNode --id n1 --port 7001 --dir data/n1 --coordinator`<br>`java -cp target/classes dfs.StorageNode --id n2 --port 7002 --dir data/n2`<br>`java -cp target/classes dfs.StorageNode --id n3 --port 7003 --dir data/n3` | Fiecare proces își creează directorul și afișează mesajul de pornire cu portul, directorul și rolul său; în `nodes` toate cele 3 noduri apar cu starea `ACTIV`. |
+| 2 | Încărcarea unui fișier din client | `put raport.pdf` | Clientul afișează UUID-ul generat pentru `raport.pdf` și cele două noduri distincte pe care au fost scrise copiile (de exemplu `n2` și `n3`). |
+| 3 | Descărcarea fișierului și verificarea integrității | `get raport.pdf ./out/` | Clientul descarcă fișierul în `./out/raport.pdf`, confirmă că checksum-ul SHA-256 corespunde cu cel din metadate și salvează fișierul pe disc. |
+| 4 | Pornirea nodului `n4` în timpul rulării, fără oprirea sistemului | `java -cp target/classes dfs.StorageNode --id n4 --port 7004 --dir data/n4`<br>apoi în client: `nodes` | În cel mult 3 secunde de la pornire, comanda `nodes` afișează `n4` cu starea `ACTIV` alături de `n1`, `n2` și `n3`. |
+| 5 | Oprirea forțată a unui nod care deține o copie a fișierului | `kill -9 <PID_n2>`<br>apoi în client: `nodes` și `get raport.pdf ./out/` | În maximum 5 secunde `n2` apare ca `CAZUT` în `nodes`; fișierul `raport.pdf` poate fi descărcat în continuare de pe a doua copie, iar sistemul reface copia lipsă pe un alt nod activ (`n4`). |
+| 6 | Oprirea forțată a coordonatorului | `kill -9 <PID_n1>` | Nodurile rămase detectează lipsa coordonatorului `n1` și declanșează alegerea unui nou coordonator în cel mult 10 secunde. |
+| 7 | Listarea și descărcarea fișierelor prin noul coordonator | `ls`<br>`get raport.pdf ./out/` | Noul coordonator are catalogul reconstruit din rapoartele nodurilor active; `ls` afișează `raport.pdf` cu nodurile curente, iar `get` descarcă fișierul cu checksum valid. |
+
+## 7. Schița protocolului de comunicație
+
+Comunicația dintre componente se face peste TCP. Deoarece TCP este un flux continuu de octeți (nu păstrează singur granițele dintre mesaje), protocolul folosește o încadrare explicită:
+1. Fiecare mesaj începe cu o linie de antet în format text sau JSON pe o singură linie, terminată cu caracterul `\n`.
+2. Dacă mesajul transportă conținutul unui fișier, antetul conține câmpul `size` (numărul de octeți), iar imediat după caracterul `\n` al antetului urmează exact `size` octeți de date brute pe același flux TCP. Receptorul citește mai întâi linia de antet, apoi citește din socket exact numărul de octeți specificat.
+
+### Mesajele protocolului
+
+| Mesaj | Direcție | Conținut cerere | Răspuns |
+| :--- | :--- | :--- | :--- |
+| `ALLOCATE` | client → coordonator | Numele fișierului, dimensiunea în octeți, checksum-ul SHA-256. | `OK` cu `fileId` (UUID) și adresele a două noduri active (`node1`, `node2`), sau `ERROR` (nume existent, mai puțin de 2 noduri active). |
+| `PUT` | client → nod (primar) | Antet cu `fileId`, nume fișier, `size`, checksum SHA-256 și adresa nodului secundar, urmat de exact `size` octeți de conținut. | `OK` după ce atât nodul primar cât și nodul secundar au salvat și verificat fișierul, sau `ERROR` dacă scrierea ori replicarea a eșuat. |
+| `REPLICATE` | nod → nod (secundar) | Antet cu `fileId`, nume fișier, `size` și checksum SHA-256, urmat de exact `size` octeți de conținut. | `OK` dacă fișierul a fost scris pe disc și checksum-ul calculat local corespunde, sau `ERROR` la checksum invalid ori eroare de disc. |
+| `COMMIT` | nod → coordonator | Confirmarea că fișierul `fileId` (nume, `size`, checksum, ID-urile nodurilor cu copii) a fost stocat pe disc. | `OK` după ce coordonatorul salvează intrarea în catalogul de metadate. |
+| `LOCATE` | client → coordonator | Numele fișierului cerut pentru descărcare. | `OK` cu `fileId`, `size`, checksum SHA-256 și lista adreselor nodurilor care dețin copiile active, sau `ERROR` dacă fișierul nu există. |
+| `GET` | client → nod | Antet cu `fileId` cerut. | Antet `OK` cu `size` și checksum, urmat de exact `size` octeți de conținut binar, sau `ERROR` dacă fișierul lipsește de pe nod. |
+| `LIST` | client → coordonator | Cerere fără parametri suplimentari pentru comanda `ls`. | `OK` urmat de lista metadatelor tuturor fișierelor din catalog (nume, `fileId`, `size`, checksum, lista de noduri). |
+| `DELETE` | client → coordonator și coordonator → nod | De la client la coordonator: numele fișierului de șters (`rm`). De la coordonator la nodurile cu copii: `fileId`-ul de șters de pe disc. | `OK` la ștergerea din catalog și confirmarea de la nodurile active, sau `ERROR` dacă fișierul nu există în catalog. |
+| `NODES_STATUS` | client → coordonator | Cerere fără parametri pentru comanda `nodes`. | `OK` urmat de lista nodurilor cunoscute (ID, adresă, port, stare `ACTIV`/`SUSPECT`/`CAZUT`, timp de la ultimul semn de viață). |
+
+## 8. Ce prevedem din arhitectură pentru etapele următoare
+
+| Aspect arhitectural | Cum este pregătit din Etapa 1 | Etapa în care se extinde |
+| :--- | :--- | :--- |
+| Identitatea și configurarea nodurilor | Fiecare nod primește din linia de comandă `--id`, `--port` și `--dir`; nimic nu este hardcodat în cod, permițând rularea oricărui număr de noduri pe porturi și directoare diferite. | Etapa 2, Etapa 3 |
+| Starea nodurilor în cluster | Modelul `NodeInfo` și enum-ul `NodeState` (`ACTIV`, `SUSPECT`, `CAZUT`) împreună cu `lastHeartbeatMs` sunt deja definite pentru urmărirea semnelor de viață. | Etapa 4 |
+| Alegerea nodurilor pentru copii | Metadatele fișierului păstrează o listă de ID-uri de noduri (`replicaNodeIds`), iar coordonatorul selectează două noduri `ACTIV` distincte la `ALLOCATE` și la re-replicare. | Etapa 3, Etapa 5 |
+| Cod unic pentru toate nodurile | Atât coordonatorul cât și nodurile de stocare pornesc din aceeași clasă (`StorageNode`), diferențiate la pornire doar prin flag-ul `--coordinator`; astfel orice nod are codul necesar pentru a deveni coordonator după realegere. | Etapa 6 |
+| Reconstrucția catalogului | Fiecare nod își gestionează propriul director de date și poate raporta fișierele deținute, astfel încât un coordonator nou ales să poată reface metadatele fără o bază de date externă. | Etapa 6 |
