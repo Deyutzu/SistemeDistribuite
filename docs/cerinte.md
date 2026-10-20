@@ -71,3 +71,49 @@ Dacă nodul căzut este repornit mai târziu, la reintrarea în cluster acesta t
 1. Identificarea fișierelor: utilizatorul lucrează cu numele fișierului (de exemplu `raport.pdf`), însă intern coordonatorul asociază fiecărui fișier un `UUID` unic. Pe discul nodurilor de stocare fișierele sunt salvate folosind acest `UUID` ca nume de fișier, pentru a evita conflictele de căi sau caractere speciale.
 2. Nume duplicate la încărcare: dacă utilizatorul rulează `put` pentru un nume de fișier care există deja în catalogul coordonatorului, cererea este refuzată direct cu un mesaj clar de eroare. Nu se face suprascriere automată; dacă utilizatorul vrea să înlocuiască fișierul, trebuie să ruleze mai întâi `rm` și apoi `put`.
 3. Dimensiunea maximă a unui fișier: sistemul acceptă fișiere de cel mult 500 MB (524288000 octeți). Clientul verifică dimensiunea local înainte de a cere alocarea nodurilor și refuză transferul dacă limita este depășită.
+
+## 3. Modelul de date
+
+Coordonatorul menține în memorie două structuri principale: catalogul de metadate al fișierelor și registrul nodurilor din cluster.
+
+### Metadatele fișierului (`FileMetadata`)
+
+| Câmp | Tip | Descriere |
+| :--- | :--- | :--- |
+| `fileId` | `UUID` | Identificatorul intern unic al fișierului, folosit ca nume pe discul nodurilor. |
+| `fileName` | `String` | Numele original al fișierului folosit în comenzile clientului (ex. `raport.pdf`). |
+| `size` | `long` | Dimensiunea exactă a fișierului în octeți. |
+| `sha256Checksum` | `String` | Valoarea hash SHA-256 în format hexazecimal (64 de caractere), calculată la încărcare. |
+| `replicaNodeIds` | `List<String>` | Lista cu ID-urile nodurilor pe care se află copiile fișierului (ex. `["n2", "n3"]`). |
+
+### Informațiile despre un nod (`NodeInfo`)
+
+| Câmp | Tip | Descriere |
+| :--- | :--- | :--- |
+| `id` | `String` | Identificatorul unic al nodului (ex. `n1`, `n2`). |
+| `address` | `String` | Adresa IP sau hostname-ul la care ascultă nodul. |
+| `port` | `int` | Portul TCP pe care nodul primește conexiuni. |
+| `state` | `NodeState` | Starea curentă a nodului: `ACTIV`, `SUSPECT` sau `CAZUT`. |
+| `lastHeartbeatMs` | `long` | Momentul ultimului semn de viață primit, exprimat în milisecunde (`System.currentTimeMillis()`). |
+
+### Reconstrucția metadatelor (pentru Etapa 6)
+
+Catalogul de metadate ținut de coordonator poate fi reconstruit integral din rapoartele nodurilor de stocare. Fiecare nod salvează lângă fișierul efectiv și metadatele de bază ale acestuia (`UUID`, nume, dimensiune, checksum SHA-256). Dacă procesul coordonator cade și un alt nod este ales ca nou coordonator (Etapa 6), fiecare nod activ își trimite lista locală de fișiere către noul coordonator, care reface astfel catalogul și harta copiilor fără pierdere de date.
+
+## 4. Cerințe nefuncționale
+
+| Cerință | Obiectiv | Cum se măsoară | Etapa |
+| :--- | :--- | :--- | :--- |
+| Integritate | 0 checksum-uri diferite din 100 de descărcări | Se încarcă un fișier, se descarcă de 100 de ori și se compară SHA-256 al fiecărei copii descărcate cu fișierul inițial. | Etapa 2 |
+| Scalabilitate | Debit total mai mare cu 3 noduri față de 1 nod la transferul a 10 fișiere de 100 MB | Se măsoară timpul total de transfer pentru 10 fișiere de 100 MB pe un singur nod și apoi pe 3 noduri în paralel, calculând debitul în MB/s. | Etapa 3 |
+| Descoperire | Nod nou vizibil în maximum 3 secunde | Se pornește un nod nou în timp ce sistemul rulează și se cronometrează timpul până când apare cu starea `ACTIV` în comanda `nodes`. | Etapa 4 |
+| Detectarea defectelor | Nod oprit cu `kill -9` marcat `CAZUT` în maximum 5 secunde | Se oprește forțat procesul unui nod și se măsoară durata până când coordonatorul îi schimbă starea în `CAZUT`. | Etapa 4 |
+| Replicare | Exact 2 copii păstrate pe noduri distincte | După fiecare `put` și după căderea unui nod, se verifică în `ls` și în directoarele `data/` că fișierul există pe două noduri diferite. | Etapa 5 |
+| Disponibilitate | 100% din fișiere rămân descărcabile după oprirea oricărui nod | Se încarcă mai multe fișiere, se oprește oricare dintre nodurile cu copii și se rulează `get` pentru toate fișierele din sistem. | Etapa 5 |
+| Coordonare | Coordonator nou ales și funcțional în maximum 10 secunde | Se oprește coordonatorul curent cu `kill -9` și se măsoară timpul până când un alt nod preia rolul și răspunde la `ls` și `get`. | Etapa 6 |
+
+## 5. Ipoteze de lucru
+
+- Sistemul rulează într-o rețea locală (LAN sau pe aceeași mașină în procese separate), cu latență mică și lărgime de bandă suficientă pentru transferul fișierelor.
+- La un moment dat poate cădea cel mult un nod înainte ca sistemul să detecteze defectul și să refacă numărul de copii sau să aleagă un nou coordonator.
+- Defectele nodurilor sunt de tip crash (procesul se oprește brusc sau nu mai răspunde la rețea), nu defecte bizantine (nodurile nu trimit mesaje falsificate intenționat și nu alterează protocolul).
