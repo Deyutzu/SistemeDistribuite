@@ -103,6 +103,11 @@ public class StorageNode {
         }
 
         String fileName = header[1];
+        if (!Protocol.isValidFileName(fileName) || fileName.endsWith(".part")) {
+            Protocol.writeHeader(out, "ERROR nume invalid");
+            return;
+        }
+
         long size;
         try {
             size = Long.parseLong(header[2]);
@@ -147,6 +152,10 @@ public class StorageNode {
         }
 
         String fileName = header[1];
+        if (!Protocol.isValidFileName(fileName)) {
+            Protocol.writeHeader(out, "ERROR nume invalid");
+            return;
+        }
         if (fileName.endsWith(".part")) {
             Protocol.writeHeader(out, "NOT_FOUND");
             return;
