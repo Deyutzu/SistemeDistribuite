@@ -161,3 +161,22 @@ Comunicația dintre componente se face peste TCP. Deoarece TCP este un flux cont
 | Alegerea nodurilor pentru copii | Metadatele fișierului păstrează o listă de ID-uri de noduri (`replicaNodeIds`), iar coordonatorul selectează două noduri `ACTIV` distincte la `ALLOCATE` și la re-replicare. | Etapa 3, Etapa 5 |
 | Cod unic pentru toate nodurile | Atât coordonatorul cât și nodurile de stocare pornesc din aceeași clasă (`StorageNode`), diferențiate la pornire doar prin flag-ul `--coordinator`; astfel orice nod are codul necesar pentru a deveni coordonator după realegere. | Etapa 6 |
 | Reconstrucția catalogului | Fiecare nod își gestionează propriul director de date și poate raporta fișierele deținute, astfel încât un coordonator nou ales să poată reface metadatele fără o bază de date externă. | Etapa 6 |
+
+## 9. Arhitectura unui nod și alegerea protocoalelor
+
+Fiecare proces `StorageNode` este format din trei componente care rulează în paralel:
+- Serverul TCP (`ServerSocket` + `ExecutorService`): primește conexiuni concurente pentru transferurile `PUT` și `GET`, citind mai întâi antetul încadrat prin `writeUTF`/`readUTF` și apoi fluxul binar pe bucăți de 64 KB.
+- Modulul de descoperire (`MulticastDiscovery`): conține două fire dedicate — unul trimite periodic mesajul `HELLO;<id>;<portTCP>` pe grupul `239.255.0.<k>:4446` la fiecare 2 secunde, iar celălalt ascultă datagramele grupului și menține tabela `ConcurrentHashMap<String, Membru>` cu adresa reală extrasă din `packet.getAddress()` și timpul ultimului anunț.
+- Directorul local de stocare (`--dir`): păstrează fișierele primite complet. La scriere se folosește un fișier temporar `<nume>.part`, mutat atomic la numele final doar după validarea SHA-256.
+
+Folosim TCP pentru transferul de fișiere deoarece oferă livrare ordonată, retransmisie automată la pierderi de pachete și control al fluxului pentru fișiere mari, fără să încărcăm fișierul în memorie. Folosim UDP multicast pentru anunțuri deoarece permite descoperirea dinamică a nodurilor în rețeaua locală fără o listă statică de IP-uri și fără conexiuni individuale între toate perechile de noduri.
+
+## 10. Rezultate Etapa 2
+
+Măsurătorile au fost rulate local pe Windows cu 3 procese (`n1`, `n2`, `n3`, echipa `1`, grup `239.255.0.1:4446`, interfață detectată `172.30.16.1`).
+
+| Verificare | Obiectiv | Rezultat măsurat | Status |
+| :--- | :--- | :--- | :--- |
+| Integritate (100 fișiere aleatorii) | 0 checksum-uri diferite din 100 | `Verificate 100 fișiere: 100 corecte, 0 diferite` (`scripts/test-integritate.sh` și `.bat`) | Îndeplinit |
+| Transfer fișier 5 MB (`test_5mb.bin`, 5242880 octeți) | `put` pe `n2`, `get` identic cu `cmp`, `NOT_FOUND` pe `n3` | `STORED 3ca8153d...`, `checksum OK` la descărcare de pe `n2`, `cmp -s` cu cod `0`, `NOT_FOUND` pe `n3` | Îndeplinit |
+| Descoperire nod nou (`n3` pornit după `n1` și `n2`) | Cel mult 3 secunde | `n3` pornit la `11:12:32.950`, detectat în `n1` și `n2` la `11:12:33.213` (diferență reală: 263 ms) | Îndeplinit |
