@@ -224,7 +224,7 @@ public class MulticastDiscovery {
         return socket;
     }
 
-    private static NetworkInterface pickSendInterface(List<NetworkInterface> interfaces) {
+    private static NetworkInterface pickSendInterface(List<NetworkInterface> interfaces) throws SocketException {
         for (NetworkInterface nif : interfaces) {
             if (!nif.isLoopback()) {
                 return nif;
