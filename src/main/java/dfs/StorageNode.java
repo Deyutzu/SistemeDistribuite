@@ -86,6 +86,8 @@ public class StorageNode {
 
             if ("PUT".equals(header[0])) {
                 handlePut(header, in, out);
+            } else if ("GET".equals(header[0])) {
+                handleGet(header, out);
             } else {
                 Protocol.writeHeader(out, "ERROR comanda necunoscută");
             }
@@ -136,6 +138,30 @@ public class StorageNode {
             Files.deleteIfExists(partPath);
             throw e;
         }
+    }
+
+    private void handleGet(String[] header, DataOutputStream out) throws IOException {
+        if (header.length != 2) {
+            Protocol.writeHeader(out, "ERROR comanda necunoscută");
+            return;
+        }
+
+        String fileName = header[1];
+        if (fileName.endsWith(".part")) {
+            Protocol.writeHeader(out, "NOT_FOUND");
+            return;
+        }
+
+        Path filePath = config.getStorageDirectory().resolve(fileName);
+        if (!Files.isRegularFile(filePath)) {
+            Protocol.writeHeader(out, "NOT_FOUND");
+            return;
+        }
+
+        long size = Files.size(filePath);
+        String sha256 = Protocol.checksum(filePath);
+        Protocol.writeHeader(out, "FILE " + size + " " + sha256);
+        Protocol.sendBytes(out, filePath);
     }
 
     public void stop() {
