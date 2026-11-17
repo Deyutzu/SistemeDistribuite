@@ -9,6 +9,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -82,9 +83,58 @@ public class StorageNode {
                 Protocol.writeHeader(out, "ERROR comanda necunoscută");
                 return;
             }
-            Protocol.writeHeader(out, "ERROR comanda necunoscută");
+
+            if ("PUT".equals(header[0])) {
+                handlePut(header, in, out);
+            } else {
+                Protocol.writeHeader(out, "ERROR comanda necunoscută");
+            }
         } catch (Exception e) {
             System.err.println("[" + config.getId() + "] eroare pe conexiunea TCP: " + e.getMessage());
+        }
+    }
+
+    private void handlePut(String[] header, DataInputStream in, DataOutputStream out) throws IOException {
+        if (header.length != 4) {
+            Protocol.writeHeader(out, "ERROR comanda necunoscută");
+            return;
+        }
+
+        String fileName = header[1];
+        long size;
+        try {
+            size = Long.parseLong(header[2]);
+        } catch (NumberFormatException e) {
+            Protocol.writeHeader(out, "ERROR comanda necunoscută");
+            return;
+        }
+        String expectedSha256 = header[3];
+
+        if (size < 0) {
+            Protocol.writeHeader(out, "ERROR comanda necunoscută");
+            return;
+        }
+        if (size > Protocol.MAX_FILE_SIZE) {
+            Protocol.writeHeader(out, "ERROR fișier prea mare");
+            return;
+        }
+
+        Path storageDir = config.getStorageDirectory();
+        Path partPath = storageDir.resolve(fileName + ".part");
+        Path targetPath = storageDir.resolve(fileName);
+
+        try {
+            String actualSha256 = Protocol.receiveBytes(in, size, partPath);
+            if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
+                Files.deleteIfExists(partPath);
+                Protocol.writeHeader(out, "ERROR checksum diferit");
+                return;
+            }
+            Files.move(partPath, targetPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            Protocol.writeHeader(out, "STORED " + actualSha256);
+        } catch (IOException e) {
+            Files.deleteIfExists(partPath);
+            throw e;
         }
     }
 
