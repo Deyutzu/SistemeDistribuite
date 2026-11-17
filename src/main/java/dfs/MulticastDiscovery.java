@@ -12,6 +12,8 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.StandardSocketOptions;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
@@ -23,6 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class MulticastDiscovery {
     private static final long ANNOUNCE_INTERVAL_MS = 2000L;
+    private static final int MAX_PACKET_BYTES = 512;
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
     private final String selfId;
     private final int selfPortTcp;
@@ -35,6 +39,7 @@ public class MulticastDiscovery {
     private MulticastSocket sendSocket;
     private NetworkInterface sendInterface;
     private Thread senderThread;
+    private Thread listenerThread;
 
     public MulticastDiscovery(String selfId, int selfPortTcp, int team) throws IOException {
         this.selfId = selfId;
@@ -45,6 +50,21 @@ public class MulticastDiscovery {
 
     public Map<String, Membru> getPeers() {
         return peers;
+    }
+
+    public void start() throws IOException {
+        running = true;
+        startListener();
+        startSender();
+    }
+
+    public void startListener() throws IOException {
+        running = true;
+        List<NetworkInterface> joined = new ArrayList<>();
+        receiveSocket = openJoinedSocket(groupAddress, multicastPort, joined);
+        listenerThread = new Thread(this::listenLoop, "multicast-listener-" + selfId);
+        listenerThread.setDaemon(true);
+        listenerThread.start();
     }
 
     public void startSender() throws IOException {
@@ -84,6 +104,56 @@ public class MulticastDiscovery {
                 break;
             }
         }
+    }
+
+    private void listenLoop() {
+        byte[] buffer = new byte[MAX_PACKET_BYTES];
+        while (running) {
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            try {
+                receiveSocket.receive(packet);
+                Membru member = parseAnnouncement(packet);
+                if (member == null || selfId.equals(member.getId())) {
+                    continue;
+                }
+                Membru previous = peers.putIfAbsent(member.getId(), member);
+                if (previous == null) {
+                    String timestamp = LocalTime.now().format(TIME_FORMATTER);
+                    int totalKnown = peers.size() + 1;
+                    System.out.printf("%s [%s] nod descoperit: %s (cunosc acum %d)%n",
+                            timestamp, selfId, member, totalKnown);
+                    System.out.flush();
+                } else {
+                    previous.setLastAnnouncementMs(member.getLastAnnouncementMs());
+                }
+            } catch (IOException e) {
+                if (running) {
+                    System.err.println("[" + selfId + "] eroare la recepția multicast: " + e.getMessage());
+                }
+            }
+        }
+    }
+
+    public static Membru parseAnnouncement(DatagramPacket packet) {
+        String message = new String(packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8).trim();
+        String[] parts = message.split(";", -1);
+        if (parts.length != 3 || !Protocol.HELLO_PREFIX.equals(parts[0])) {
+            return null;
+        }
+        String id = parts[1].trim();
+        if (id.isEmpty()) {
+            return null;
+        }
+        int portTcp;
+        try {
+            portTcp = Integer.parseInt(parts[2].trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        if (portTcp < 1 || portTcp > 65535) {
+            return null;
+        }
+        return new Membru(id, packet.getAddress(), portTcp, System.currentTimeMillis());
     }
 
     public static List<NetworkInterface> findMulticastInterfaces() throws SocketException {
@@ -167,6 +237,9 @@ public class MulticastDiscovery {
         running = false;
         if (senderThread != null) {
             senderThread.interrupt();
+        }
+        if (listenerThread != null) {
+            listenerThread.interrupt();
         }
         if (sendSocket != null && !sendSocket.isClosed()) {
             sendSocket.close();
