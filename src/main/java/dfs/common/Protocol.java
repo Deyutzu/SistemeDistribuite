@@ -2,8 +2,10 @@ package dfs.common;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -63,6 +65,39 @@ public final class Protocol {
             }
         }
         return toHex(digest.digest());
+    }
+
+    public static String receiveBytes(InputStream in, long size, Path target) throws IOException {
+        MessageDigest digest = newSha256Digest();
+        byte[] buffer = new byte[BUFFER_SIZE];
+        long remaining = size;
+
+        try (OutputStream out = Files.newOutputStream(target)) {
+            while (remaining > 0) {
+                int toRead = (int) Math.min(buffer.length, remaining);
+                int read = in.read(buffer, 0, toRead);
+                if (read == -1) {
+                    throw new EOFException("Conexiunea s-a închis înainte de primirea tuturor octeților (lipsesc "
+                            + remaining + " din " + size + " octeți).");
+                }
+                out.write(buffer, 0, read);
+                digest.update(buffer, 0, read);
+                remaining -= read;
+            }
+            out.flush();
+        }
+        return toHex(digest.digest());
+    }
+
+    public static void sendBytes(OutputStream out, Path source) throws IOException {
+        byte[] buffer = new byte[BUFFER_SIZE];
+        try (InputStream in = Files.newInputStream(source)) {
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+        }
+        out.flush();
     }
 
     static MessageDigest newSha256Digest() {
