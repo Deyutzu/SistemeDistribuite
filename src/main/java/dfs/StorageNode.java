@@ -40,13 +40,6 @@ public class StorageNode {
         serverSocket = new ServerSocket(config.getPort());
         connectionPool = Executors.newCachedThreadPool();
 
-        discovery = new MulticastDiscovery(config.getId(), config.getPort(), config.getTeam());
-        discovery.start();
-
-        acceptThread = new Thread(this::acceptLoop, "tcp-accept-" + config.getId());
-        acceptThread.setDaemon(true);
-        acceptThread.start();
-
         System.out.printf("[%s] pornit: port %d, director %s, rol: %s%n",
                 config.getId(),
                 config.getPort(),
@@ -57,6 +50,13 @@ public class StorageNode {
                 config.getMulticastGroup(),
                 Protocol.MULTICAST_PORT);
         System.out.flush();
+
+        discovery = new MulticastDiscovery(config.getId(), config.getPort(), config.getTeam());
+        discovery.start();
+
+        acceptThread = new Thread(this::acceptLoop, "tcp-accept-" + config.getId());
+        acceptThread.setDaemon(true);
+        acceptThread.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(this::stop));
     }
